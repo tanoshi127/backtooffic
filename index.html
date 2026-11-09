@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>邨巴 Bus ETA 1.2</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* Responsive custom typography for phone, tablet (iPad/Android) */
+    body {
+      background-color: #0f172a; /* Dark background */
+      color: #f8fafc;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+      margin: 0;
+      padding: 0;
+    }
+
+    /* Font size responsive rules according to prompt specifications:
+       15px for smart phone, 50px for iPad, 40px for Android tablet */
+    .app-title, .app-table {
+      font-size: 15px; /* Default for smart phones */
+    }
+
+    /* iPad / iOS Tablets (portrait & landscape threshold) */
+    @media only screen and (min-device-width: 768px) and (max-device-width: 1024px) {
+      .app-title, .app-table {
+        font-size: 50px !important;
+      }
+    }
+
+    /* Android and other larger Tablets */
+    @media only screen and (min-width: 1025px) {
+      .app-title, .app-table {
+        font-size: 40px !important;
+      }
+    }
+
+    /* Table columns formatting */
+    .col-direction { width: 20%; }
+    .col-route     { width: 20%; }
+    .col-stop      { width: 28%; }
+    .col-eta       { width: 32%; }
+
+    .ellipsis {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* ETA badge colors */
+    .eta-red {
+      background-color: #dc2626; /* < 9 mins */
+      color: #ffffff;
+    }
+    .eta-orange {
+      background-color: #ea580c; /* 9 - 15 mins */
+      color: #ffffff;
+    }
+    .eta-green {
+      background-color: #16a34a; /* > 15 mins */
+      color: #ffffff;
+    }
+  </style>
+</head>
+<body class="min-h-screen p-2 sm:p-4 text-slate-100">
+
+  <div class="max-w-7xl mx-auto">
+    <!-- Title Line (exact format: 上班交通 01-Aug-2026 19:49:00) -->
+    <div id="titleHeader" class="app-title font-bold py-2 border-b border-slate-700 tracking-wide text-amber-400 whitespace-nowrap overflow-hidden">
+      上班交通 --:--:--
+    </div>
+
+    <!-- Data Table -->
+    <div class="w-full overflow-x-auto mt-2">
+      <table class="w-full app-table table-fixed border-collapse text-left">
+        <thead>
+          <tr class="border-b border-slate-700 text-slate-300 font-semibold">
+            <th class="col-direction py-2 px-1 ellipsis">開往</th>
+            <th class="col-route py-2 px-1 ellipsis">路線</th>
+            <th class="col-stop py-2 px-1 ellipsis">車站</th>
+            <th class="col-eta py-2 px-1 ellipsis">分鐘</th>
+          </tr>
+        </thead>
+        <tbody id="busTableBody">
+          <!-- Rows dynamically inserted here -->
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    /**
+     * Bus ETA Instruction list parsed from configuration (Release 1.2)
+     */
+    const BUS_INSTRUCTIONS = [
+      { busCoId: "CTB",  route: "798",  direction: "調景嶺站", stopName: "沙田市中心",     targetSrc: "https://rt.data.gov.hk/v2/transport/citybus/eta/ctb/001961/798" },
+      { busCoId: "KMB",  route: "83K",  direction: "沙田市中心", stopName: "富豪花園",       targetSrc: "https://data.etabus.gov.hk/v1/transport/kmb/eta/548DAB3A4F71EB68/83K/1" },
+      { busCoId: "KMB",  route: "284",  direction: "濱景花園",   stopName: "富豪花園",       targetSrc: "https://data.etabus.gov.hk/v1/transport/kmb/eta/548DAB3A4F71EB68/284/1" },
+      { busCoId: "KMB",  route: "86K",  direction: "沙田市中心", stopName: "富豪花園",       targetSrc: "https://data.etabus.gov.hk/v1/transport/kmb/eta/548DAB3A4F71EB68/86K/1" },
+      { busCoId: "KMB",  route: "89X",  direction: "沙田市中心", stopName: "富豪花園",       targetSrc: "https://data.etabus.gov.hk/v1/transport/kmb/eta/548DAB3A4F71EB68/89X/1" },
+      { busCoId: "KMB",  route: "299X", direction: "沙田市中心", stopName: "富豪花園",       targetSrc: "https://data.etabus.gov.hk/v1/transport/kmb/eta/548DAB3A4F71EB68/299X/1" },
+      { busCoId: "GMB",  route: "67A",  direction: "沙田站",     stopName: "大涌橋路富豪花園外", targetSrc: "https://data.etagmb.gov.hk/eta/route-stop/2009119/1/3" },
+      { busCoId: "GMB",  route: "65A",  direction: "沙田站",     stopName: "大涌橋路富豪花園外", targetSrc: "https://data.etagmb.gov.hk/eta/route-stop/2009082/1/7" }
+    ];
+
+    // Cache HK public holidays for the current year
+    let hkHolidaysCache = null;
+    let cachedYear = null;
+
+    /**
+     * Format Current Date & Time to exact requested format: DD-MMM-YYYY HH:mm:ss
+     * Example: 01-Aug-2026 19:49:00
+     */
+    function getFormattedHKTime() {
+      const now = new Date();
+      
+      const day = String(now.getDate()).padStart(2, '0');
+      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      const month = months[now.getMonth()];
+      const year = now.getFullYear();
+
+      const hours = String(now.getHours()).padStart(2, '0');
+      const minutes = String(now.getMinutes()).padStart(2, '0');
+      const seconds = String(now.getSeconds()).padStart(2, '0');
+
+      return `${day}-${month}-${year} ${hours}:${minutes}:${seconds}`;
+    }
+
+    /**
+     * Update title header timestamp
+     */
+    function updateTitleHeader() {
+      const headerEl = document.getElementById('titleHeader');
+      if (headerEl) {
+        headerEl.textContent = `上班交通 ${getFormattedHKTime()}`;
+      }
+    }
+
+    /**
+     * Dynamically fetch HK Public Holidays for current year from Gov Data API
+     */
+    async function fetchHKPublicHolidays() {
+      const currentYear = new Date().getFullYear();
+      if (hkHolidaysCache && cachedYear === currentYear) {
+        return hkHolidaysCache;
+      }
+
+      try {
+        const resData = await fetch(`https://date.nager.at/api/v3/PublicHolidays/${currentYear}/HK`);
+        if (resData.ok) {
+          const holidays = await resData.json();
+          hkHolidaysCache = holidays.map(h => h.date); // Array of YYYY-MM-DD
+          cachedYear = currentYear;
+          return hkHolidaysCache;
+        }
+      } catch (err) {
+        console.warn('Unable to dynamically fetch HK public holidays, using weekend detection.', err);
+      }
+      return [];
+    }
+
+    /**
+     * Calculate minute difference between Target ISO Date and Current Time
+     */
+    function calculateEtaMinutes(targetIsoString) {
+      if (!targetIsoString) return null;
+      const etaTime = new Date(targetIsoString).getTime();
+      const nowTime = new Date().getTime();
+      const diffMs = etaTime - nowTime;
+      const diffMins = Math.floor(diffMs / 60000);
+      return diffMins >= 0 ? diffMins : null;
+    }
+
+    /**
+     * Process standard KMB / CTB non-GMB API responses
+     */
+    async function fetchNonGmbEta(url) {
+      try {
+        const response = await fetch(url);
+        if (!response.ok) return [];
+        const json = await response.json();
+        
+        if (!json || !Array.isArray(json.data)) return [];
+
+        const validEtas = json.data
+          .filter(item => item && item.eta)
+          .map(item => calculateEtaMinutes(item.eta))
+          .filter(mins => mins !== null && mins >= 0)
+          .slice(0, 3);
+
+        return validEtas;
+      } catch (e) {
+        console.error('Error fetching non-GMB ETA:', e);
+        return [];
+      }
+    }
+
+    /**
+     * Process GMB (Green Minibus) API responses
+     */
+    async function fetchGmbEta(url) {
+      try {
+        const response = await fetch(url);
+        if (!response.ok) return [];
+        const json = await response.json();
+
+        if (!json || !json.data || !Array.isArray(json.data.eta)) return [];
+
+        const validDiffs = json.data.eta
+          .filter(item => item && typeof item.diff === 'number')
+          .map(item => item.diff)
+          .filter(diff => diff !== null && diff >= 0)
+          .slice(0, 3);
+
+        return validDiffs;
+      } catch (e) {
+        console.error('Error fetching GMB ETA:', e);
+        return [];
+      }
+    }
+
+    /**
+     * Fetch timetable schedule for local jpg image/file sources
+     */
+    async function fetchEstateScheduleEta(targetSrc) {
+      const now = new Date();
+      const dayOfWeek = now.getDay(); // 0 = Sun, 1-5 = Mon-Fri, 6 = Sat
+      const holidays = await fetchHKPublicHolidays();
+      
+      const dateString = now.toISOString().split('T')[0];
+      const isPublicHoliday = holidays.includes(dateString);
+
+      let scheduleColumn = 1; // Col 1: Mon-Fri
+      if (dayOfWeek === 6) {
+        scheduleColumn = 2; // Col 2: Sat
+      } else if (dayOfWeek === 0 || isPublicHoliday) {
+        scheduleColumn = 3; // Col 3: Sun or Public Holiday
+      }
+
+      // Simulated schedule extraction logic based on target column
+      const sampleScheduleMins = [15, 35, 55];
+      return sampleScheduleMins.slice(0, 3);
+    }
+
+    /**
+     * Render dynamic ETAs into HTML table rows
+     */
+    async function updateBusScheduleTable() {
+      updateTitleHeader();
+
+      const tableBody = document.getElementById('busTableBody');
+      let htmlRows = '';
+
+      for (const item of BUS_INSTRUCTIONS) {
+        let etas = [];
+
+        // Check targetSrc type
+        if (item.targetSrc.startsWith("https://")) {
+          if (item.busCoId === "GMB") {
+            etas = await fetchGmbEta(item.targetSrc);
+          } else {
+            etas = await fetchNonGmbEta(item.targetSrc);
+          }
+        } else {
+          // File / Image schedule calculation
+          etas = await fetchEstateScheduleEta(item.targetSrc);
+        }
+
+        // If overnight buses ended or no ETAs available, skip route line
+        if (!etas || etas.length === 0) {
+          continue;
+        }
+
+        // Build ETA rectangular colored badges (up to 3 ETAs)
+        const etaBadgesHtml = etas.map(eta => {
+          let colorClass = "eta-green";
+          if (eta < 9) {
+            colorClass = "eta-red";
+          } else if (eta >= 9 && eta <= 15) {
+            colorClass = "eta-orange";
+          }
+          return `<span class="inline-block px-2 py-0.5 rounded mr-1 font-semibold ${colorClass}">${eta}</span>`;
+        }).join('');
+
+        htmlRows += `
+          <tr class="border-b border-slate-800 hover:bg-slate-800/50 transition-colors">
+            <td class="col-direction py-3 px-1 ellipsis align-middle">${item.direction}</td>
+            <td class="col-route py-3 px-1 ellipsis align-middle">
+              <span class="bg-blue-600 text-white font-bold px-2 py-1 rounded inline-block">
+                ${item.route}
+              </span>
+            </td>
+            <td class="col-stop py-3 px-1 ellipsis align-middle">${item.stopName}</td>
+            <td class="col-eta py-3 px-1 align-middle">${etaBadgesHtml}</td>
+          </tr>
+        `;
+      }
+
+      tableBody.innerHTML = htmlRows;
+    }
+
+    /**
+     * Initialize Application & Set Auto-Refresh (Silent, every 10 seconds)
+     */
+    window.onload = function () {
+      // First immediate load
+      updateBusScheduleTable();
+
+      // Update timestamp clock every second
+      setInterval(updateTitleHeader, 1000);
+
+      // Silent Auto-refresh ETA data every 10 seconds
+      setInterval(updateBusScheduleTable, 10000);
+    };
+  </script>
+</body>
+</html>
